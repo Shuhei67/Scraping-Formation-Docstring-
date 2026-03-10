@@ -1,3 +1,6 @@
+# Mon script permet d'obtenir exactement le même résulat que le script de correction
+# Cette version est simplement la première que j'ai écrite, à ma manière et avec mes connaissances 
+
 import requests
 from bs4 import BeautifulSoup
 
