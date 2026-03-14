@@ -10,83 +10,186 @@ et additionne tout pour obtenir la valeur totale du stock.
 ----------------------------------------------------------------------------------------------------------------------
 """
 
-import sys # Module pour intéragir avec le système d'exploitation
-from typing import List # Permet de préciser les types de données
 import re
+import sys
+from typing import List
+from urllib.parse import urljoin
 
-from selectolax.parser import HTMLParser # Equivalent de BeautifulSoup
-from loguru import logger # Vas gérer nos messages à la place des print()
 import requests
+from loguru import logger
+from selectolax.parser import HTMLParser
 
-logger.remove() # Supprime comportement par défaut
-logger.add(f"books.log", # Sauvegarde nos messages dans un fichier
-           level = "WARNING", # Uniquement les messages graves
-           rotation = "500kb") # Nouveau fichier tout les 500kb
-logger.add(sys.stderr, level = "INFO") # Affiche messages type INFO ou +
+logger.remove()
+logger.add(f'books.log',
+           level="WARNING",
+           rotation="500kb")
+
+logger.add(sys.stderr, level="INFO")
+
+BASE_URL = "https://books.toscrape.com/"
+
+
+def get_book_price_from_url(url: str, session: requests.Session = None) -> float:
+    """
+    Récupère le prix d'un livre à partir de son URL.
+
+    :param url: URL de la page du livre
+    :param session: Session HTTP pour effectuer les requêtes
+    :return: Prix du livre
+    """
+
+    try:
+        if session:
+            response = session.get(url)
+        else:
+            response = requests.get(url)
+
+        response.raise_for_status()  # Vérifie que la requête a réussi
+
+        tree = HTMLParser(response.text)
+        price = extract_price_from_page(tree)
+        stock = extract_stock_quantity_from_page(tree)
+        return price * stock
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Erreur lors de la requête HTTP : {e}")
+        return 0.0
+    except Exception as e:
+        logger.error(f"Erreur lors de l'extraction du prix depuis l'URL : {e}")
+        return 0.0
+
+
+def extract_price_from_page(tree: HTMLParser) -> float:
+    """
+    Extrait le prix d'un livre depuis la page du livre.
+
+    :param tree: HTMLParser object de la page du livre
+    :return: Prix du livre
+    """
+
+    price_node = tree.css_first("p.price_color")
+
+    if price_node:
+        price_string = price_node.text()
+    else:
+        logger.error("Aucun noeud n'a été trouvé")
+        return 0.0
+
+    try:
+        price = re.findall(r"[0-9.]+", price_string)[0]
+    except IndexError as e:
+        logger.error(f"Aucun nombre n'a été trouvé : {e}")
+        return 0.0
+    else:
+        return float(price)
+
+
+def extract_stock_quantity_from_page(tree: HTMLParser) -> int:
+    """
+    Extrait la quantité de livres en stock sur la page du livre.
+
+    :param tree: HTMLParser object de la page du livre
+    :return: Quantité de livres en stock
+    """
+
+    try:
+        price_node = tree.css_first("p.instock.availability")
+        return int(re.findall(r"\d+", price_node.text())[0])
+    except AttributeError:
+        logger.error("Aucun noeud 'p.instock.availability' n'a été trouvé")
+        return 0
+    except IndexError:
+        logger.error("Aucun nombre trouvé dans le texte de 'p.instock.availability'")
+        return 0
+
+
+def get_next_page_url(url: str, tree: HTMLParser) -> str | None:
+    """
+    Récupère l'URL de la page suivante à partir d'une page donnée.
+
+    :param url: URL de la page actuelle
+    :param tree: HTMLParser object de la page actuelle
+    :return: URL de la page suivante
+    """
+
+    next_page_node = tree.css_first("li.next > a")
+    if next_page_node and "href" in next_page_node.attributes:
+        next_page_link = next_page_node.attributes.get("href")
+        return urljoin(url, next_page_link)
+
+    logger.debug(f"Couldn't find next page URL")
+    return None
+
+
+def get_all_books_urls_on_page(url: str, tree: HTMLParser) -> List[str]:
+    """
+    Récupère toutes les URLs des livres présents sur une page.
+
+    :param url: URL de la page
+    :param tree: HTMLParser object de la page
+    :return: Liste des URLs des livres
+    """
+
+    try:
+        book_links = tree.css('h3 > a')
+        urls = [urljoin(url, link.attributes.get('href')) for link in book_links if 'href' in link.attributes]
+        return urls
+    except Exception as e:
+        logger.error(f"Erreur lors de l'extraction des URLs des livres sur la page {url} : {e}")
+        return []
 
 
 def get_all_books_urls(url: str) -> List[str]:
-        # Récupère tout les url des livres sur toutes les pages a partir d'une url
-        pass
+    """
+    Récupère toutes les URLs des livres sur toutes les pages à partir d'une URL de départ.
 
-def get_next_page_url(html: HTMLParser) -> str:
-        # Récupère l'url de la page suivante à partir du html d'une page
-        pass
+    :param url: URL de départ
+    :return: Liste de toutes les URLs des livres
+    """
 
-def get_all_books_urls_on_page(html: HTMLParser) -> List[str]:
-        # Récupère tout les url des livres sur une page à partir du html de la page
-        pass
+    urls = []
 
-def get_book_price(url: str) -> float: # Récupère le prix d'un livre à partir de son url
-        try:
-            response = requests.get(url)
-            response.raise_for_status() # Vérifie que la requete a réussi
-            tree = HTMLParser(response.text)
-            price = extract_price_from_page(tree = tree)
-            stock = extract_stock_quantity_from_page(tree = tree)
-            return price * stock
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Erreur lors de la requête HTTP : {e}")
-            return 0.0 # Retourne 0 en cas d'erreur
+    with requests.Session() as session:
+        while True:
+            try:
+                logger.info(f"Scraping page {url}")
+                r = session.get(url)
+                r.raise_for_status()
+            except requests.RequestException as e:
+                logger.error(f"Erreur lors de la requête HTTP sur la page {url} : {e}")
+                continue
 
-def extract_price_from_page(tree: HTMLParser) -> float: # Extrait le prix d'un livre à partir de son arbre HTML
-        price_node = tree.css_first("p.price_color")
-        if price_node:
-               price_string = price_node.text()
-        else:
-            logger.error("Aucun noeud contenant le prix n'a été trouver.")
-            return 0.0
-        try:
-            price = re.findall(r"[0-9.]+", price_string)[0]
-        except IndexError as e:
-            logger.error(f"Aucun nombre n'a été trouvé : {e}")
-            return 0.0
-        else:
-            return float(price)
+            tree = HTMLParser(r.text)
+            books_urls = get_all_books_urls_on_page(url, tree)
+            urls.extend(books_urls)
 
-def extract_stock_quantity_from_page(tree: HTMLParser) -> int:
-        # Extrait la quantité en stock d'un livre à partir de son arbre HTML
-        try:
-            stock_node = tree.css_first("p.instock.availability")
-            return int(re.findall(f"\d+", stock_node.text())[0])
-        except AttributeError as e:
-            logger.error(f"Aucun noeud 'p.instock.availability' n'a été trouvé : {e}")
-            return 0
-        except IndexError as e:
-            logger.error(f"Aucun nombre n'a été trouvé dans le noeud : {e}")
-            return 0
+            url = get_next_page_url(url, tree)
+            if not url:
+                break
+
+    return urls
+
+
+def get_total_price_of_all_books(urls: list) -> float:
+    """
+    Calcule le prix total de tous les livres (prix * quantité en stock) sur toutes les pages à partir d'une URL de départ.
+
+    :param urls: URLs à scrapper
+    :return: Prix total de tous les livres
+    """
+
+    total_price = 0.0
+    with requests.Session() as session:
+        for url in urls:
+            logger.info(f"Scraping book {url}")
+            total_price += get_book_price_from_url(url, session=session)
+        return total_price
+
 
 def main():
-        base_url = "http://books.toscrape.com/index.html"
-        all_books_urls = get_all_books_urls(url = base_url)
-        total_price = 0
-        for book_url in all_books_urls:
-                price = get_book_price(url = book_url)
-                total_price += price
-        return total_price
-                
+    urls = get_all_books_urls(BASE_URL)
+    total_price = get_total_price_of_all_books(urls)
+    print(f"Total price of all books is {total_price}")
 
-if __name__ == "__main__":
-        url = "http://books.toscrape.com/index.html"
-        get_book_price(url = url)
-        main()
+
+if __name__ == '__main__':
+    main()
