@@ -1,109 +1,114 @@
-import requests
-from pathlib import Path
-import sys
-import logging
-import re
-from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+import re  # Pour manipuler du texte avec des expressions régulières (regex)
+import logging  # Pour afficher des messages (debug, erreurs, etc.)
 
+import requests  # Pour faire des requêtes HTTP (récupérer une page web)
+from requests.exceptions import RequestException  # Pour gérer les erreurs de requêtes
 
+from bs4 import BeautifulSoup  # Pour parser le HTML (scraping)
+from pathlib import Path  # Pour gérer les chemins de fichiers facilement
+
+# Chemin vers le fichier local où sera sauvegardé le HTML
 FILEPATH = Path(__file__).parent / "airbnb.html"
 
+# Initialisation du logger
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.WARNING)  # Affiche seulement warnings et erreurs
 
 
+def fetch_content(url: str, from_disk: bool = False) -> str:
+    """Récupère le contenu HTML d'une page (soit en ligne, soit depuis un fichier local)"""
 
-# Récupère 5 pages de résultats de recherche Airbnb et retourne une liste de leur contenu HTML :
-def fetch_content(url: str, from_disk: bool = False) -> list:
-
+    # Si on veut lire depuis le disque ET que le fichier existe → on le lit directement
     if from_disk and FILEPATH.exists():
-        return read_from_file()
+        return _read_from_file()
 
     try:
-        print(50 * "-")
-        print(50 * "-")
-        print("🚀 Lancement du scraping, veuillez patienter...")
-        logger.debug(f"Récupération du contenu de l'URL : {url}")
-        html_pages = [] # Liste qui stockera html de chaque page
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(url)
+        logger.debug(f"Making request to {url}")
 
-            for i in range(5): # On va scraper les 5 premières pages
-                page.wait_for_selector("[data-testid='card-container']")
-                html_pages.append(page.content()) # On ajoute le contenu HTML à la liste
-                print(f"Page {i+1} récupérée.")
-                if i < 4:
-                    print(f"Récupuration de la page {i + 2} sur 5 en cours ...")
-                    page.wait_for_timeout(4000) # Attendre 4s avant de charger la page suivante
-                    page.get_by_role("link", name="Suivant").click() # Cliquer sur le bouton "Suivant" pour charger la page suivante
-            print(50 * "-")
-            print("Analyse terminée !")
-            browser.close()
+        # Requête HTTP pour récupérer la page
+        response = requests.get(url)
 
-        return html_pages  # on retourne la liste de 5 HTML
-    except PlaywrightTimeoutError as e:
-        logger.error(f"Timeout : les annonces n'ont pas chargé : {e}")
-        raise e
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération du contenu : {e}")
-        raise e
- 
+        # Vérifie si la requête a réussi (sinon lève une erreur)
+        response.raise_for_status()
 
-# Traite le contenu HTML pour extraire le prix moyen :
-def get_average_price(html_pages: list, max_price: int) -> int:
-    prices = []
-    excluded = 0
+        # Récupère le HTML sous forme de texte
+        html_content = response.text
 
-    for html in html_pages:  # On vient boucler sur chaque page
-        soup = BeautifulSoup(html, "html.parser")
-        divs = soup.find_all("div", {"data-testid": "card-container"})
-        for div in divs:
-            price_div = div.find("span", class_="sjwpj0z") or div.find("span", class_="u174bpcy")
-            if not price_div:
-                logger.warning(f"Pas réussi à trouver le prix de la div {div}")
-                continue
-            price = re.sub(r"\D", "", price_div.text)
-            if price.isdigit():
-                if int(price) <= max_price:
-                    prices.append(int(price))
-                else:
-                    excluded += 1
-            else:
-                logger.warning(f"Le prix trouvé n'est pas un nombre : {price}")
+        # Sauvegarde le HTML dans un fichier local
+        _write_to_file(content=html_content)
 
-    print(f"Nombre d'annonces analysées : {len(prices)}")
-    print(f"Prix le moins cher : {min(prices)}€")
-    print(f"Prix le plus cher : {max(prices)}€")
-    print(f"Annonces exclues : {excluded}")
+        return html_content
 
-    return round(sum(prices) / len(prices)) if prices else 0
+    except RequestException as e:
+        # Log l'erreur si la requête échoue
+        logger.error(f"Couldn't fetch content from {url} due to {str(e)}")
+        raise e  # Relance l'erreur
 
 
-# Écrit le contenu dans un fichier :
-def write_to_file(content: str) -> bool:
-    logger.debug(f"Écriture du contenu dans le fichier")
-    with open(FILEPATH, "w", encoding="utf-8") as f:
+def _write_to_file(content: str) -> bool:
+    """Écrit le contenu HTML dans un fichier"""
+
+    logger.debug("Writing content to file")
+
+    # Ouvre le fichier en écriture et écrit le contenu
+    with open(FILEPATH, "w") as f:
         f.write(content)
 
+    # Retourne True si le fichier existe (écriture réussie)
     return FILEPATH.exists()
-    # Vérifie si le fichier a été créé avec succès
 
 
-# Lit le contenu du fichier :
-def read_from_file() -> str:
-    logger.debug(f"Lecture du contenu du fichier")
-    with open(FILEPATH, "r", encoding="utf-8") as f:
+def _read_from_file() -> str:
+    """Lit le contenu HTML depuis le fichier local"""
+
+    logger.debug("Reading content from file")
+
+    # Ouvre le fichier en lecture et retourne son contenu
+    with open(FILEPATH, "r") as f:
         return f.read()
 
 
+def get_average_price(html: str) -> int:
+    """Extrait les prix depuis le HTML et calcule la moyenne"""
 
-if __name__ == "__main__":
-    url = sys.argv[-1]
-    max_price = int(input("Budget maximum pour le mois : "))
-    content = fetch_content(url=url, from_disk=False) # En mettant false il va sur internet
-    average_price = get_average_price(html_pages=content, max_price=max_price)
-    print(50 * "-")
-    print(f"Le prix moyen des annonces est de {average_price}€")
+    prices = []  # Liste pour stocker tous les prix trouvés
+
+    # Transforme le HTML en objet manipulable
+    soup = BeautifulSoup(html, 'html.parser')
+
+    # Récupère toutes les annonces (chaque div représente un logement)
+    divs = soup.find_all('div', itemprop="itemListElement")
+
+    for div in divs:
+        # Cherche le prix dans deux classes possibles (Airbnb change souvent ses classes)
+        price = div.find("span", class_="_tyxjp1") or div.find("span", class_="_1y74zjx")
+
+        # Si aucun prix trouvé → on passe à l'annonce suivante
+        if not price:
+            logger.warning(f"Couldn't find price in {div}")
+            continue
+
+        # Supprime tout ce qui n'est pas un chiffre (€, espaces, etc.)
+        price = re.sub(r"\D", "", price.text)
+
+        # Vérifie que c'est bien un nombre
+        if price.isdigit():
+            logger.debug(f"Price found : {price}")
+            prices.append(int(price))  # Ajoute le prix à la liste
+        else:
+            logger.warning(f"Price {price} is not a digit")
+
+    # Calcule la moyenne des prix
+    # Si la liste est vide → retourne 0 pour éviter une division par 0
+    return round(sum(prices) / len(prices)) if len(prices) else 0
+
+
+if __name__ == '__main__':
+    # URL de recherche Airbnb (ici Rio de Janeiro avec filtres)
+    url = "https://www.airbnb.fr/s/Rio-de-Janeiro--Rio-de-Janeiro--Br%C3%A9sil/homes?tab_id=home_tab&monthly_start_date=2024-01-01&monthly_length=3&price_filter_input_type=0&channel=EXPLORE&query=Rio%20de%20Janeiro,%20Br%C3%A9sil&date_picker_type=flexible_dates&flexible_trip_dates%5B%5D=january&flexible_trip_lengths%5B%5D=one_month&adults=1&source=structured_search_input_header&search_type=autocomplete_click&price_filter_num_nights=28&place_id=ChIJW6AIkVXemwARTtIvZ2xC3FA"
+
+    # Récupère le HTML (depuis le fichier local si possible)
+    html_content = fetch_content(url, from_disk=True)
+
+    # Calcule et affiche le prix moyen
+    print(get_average_price(html_content))
